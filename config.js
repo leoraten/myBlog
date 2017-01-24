@@ -11,7 +11,7 @@ config = {
     // When running Ghost in the wild, use the production environment.
     // Configure your URL and mail settings here
     production: {
-        url: 'http://45.32.140.49',
+        url: 'http://leoraten.com',
         mail: {},
         database: {
             client: 'sqlite3',

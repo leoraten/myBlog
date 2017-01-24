@@ -9,8 +9,10 @@ var Promise         = require('bluebird'),
     utils           = require('./utils'),
     globalUtils     = require('../utils'),
     config          = require('../config'),
-    mail            = require('./mail'),
+    mail            = require('./../mail'),
+    apiMail         = require('./mail'),
     pipeline        = require('../utils/pipeline'),
+    i18n            = require('../i18n'),
 
     docName         = 'users',
     // TODO: implement created_by, updated_by
@@ -43,13 +45,13 @@ sendInviteEmail = function sendInviteEmail(user) {
 
         emailData.resetLink = baseUrl.replace(/\/$/, '') + '/ghost/signup/' + globalUtils.encodeBase64URLsafe(resetToken) + '/';
 
-        return mail.generateContent({data: emailData, template: 'invite-user'});
+        return mail.utils.generateContent({data: emailData, template: 'invite-user'});
     }).then(function (emailContent) {
         var payload = {
             mail: [{
                 message: {
                     to: user.email,
-                    subject: emailData.invitedByName + ' 邀请您加入 ' + emailData.blogName,
+                    subject: i18n.t('common.api.users.mail.invitedByName', {invitedByName: emailData.invitedByName, blogName: emailData.blogName}),
                     html: emailContent.html,
                     text: emailContent.text
                 },
@@ -57,7 +59,7 @@ sendInviteEmail = function sendInviteEmail(user) {
             }]
         };
 
-        return mail.send(payload, {context: {internal: true}});
+        return apiMail.send(payload, {context: {internal: true}});
     });
 };
 /**
@@ -137,7 +139,7 @@ users = {
                 return {users: [result.toJSON(options)]};
             }
 
-            return Promise.reject(new errors.NotFoundError('未找到此用户。'));
+            return Promise.reject(new errors.NotFoundError(i18n.t('errors.api.users.userNotFound')));
         });
     },
 
@@ -192,14 +194,14 @@ users = {
                     var contextRoleId = contextUser.related('roles').toJSON(options)[0].id;
 
                     if (roleId !== contextRoleId && editedUserId === contextUser.id) {
-                        return Promise.reject(new errors.NoPermissionError('布不能修改自己的角色/权限。'));
+                        return Promise.reject(new errors.NoPermissionError(i18n.t('errors.api.users.cannotChangeOwnRole')));
                     }
 
                     return dataProvider.User.findOne({role: 'Owner'}).then(function (owner) {
                         if (contextUser.id !== owner.id) {
                             if (editedUserId === owner.id) {
                                 if (owner.related('roles').at(0).id !== roleId) {
-                                    return Promise.reject(new errors.NoPermissionError('不能修改博客所有者的角色/权限'));
+                                    return Promise.reject(new errors.NoPermissionError(i18n.t('errors.api.users.cannotChangeOwnersRole')));
                                 }
                             } else if (roleId !== contextRoleId) {
                                 return canThis(options.context).assign.role(role).then(function () {
@@ -212,7 +214,7 @@ users = {
                     });
                 });
             }).catch(function handleError(error) {
-                return errors.formatAndRejectAPIError(error, '你没有权限编辑此用户。');
+                return errors.formatAndRejectAPIError(error, i18n.t('errors.api.users.noPermissionToEditUser'));
             });
         }
 
@@ -239,7 +241,7 @@ users = {
                 return {users: [result.toJSON(options)]};
             }
 
-            return Promise.reject(new errors.NotFoundError('未找到此用户。'));
+            return Promise.reject(new errors.NotFoundError(i18n.t('errors.api.users.userNotFound')));
         });
     },
 
@@ -269,7 +271,7 @@ users = {
                     // Make sure user is allowed to add a user with this role
                     return dataProvider.Role.findOne({id: roleId}).then(function (role) {
                         if (role.get('name') === 'Owner') {
-                            return Promise.reject(new errors.NoPermissionError('创建的用户不能是博客所有者。'));
+                            return Promise.reject(new errors.NoPermissionError(i18n.t('errors.api.users.notAllowedToCreateOwner')));
                         }
 
                         return canThis(options.context).assign.role(role);
@@ -280,7 +282,7 @@ users = {
 
                 return options;
             }).catch(function handleError(error) {
-                return errors.formatAndRejectAPIError(error, '你没有权限添加此用户。');
+                return errors.formatAndRejectAPIError(error, i18n.t('errors.api.users.noPermissionToAddUser'));
             });
         }
 
@@ -299,7 +301,7 @@ users = {
                 newUser.password = globalUtils.uid(50);
                 newUser.status = 'invited';
             } else {
-                return Promise.reject(new errors.BadRequestError('未提供邮箱地址。'));
+                return Promise.reject(new errors.BadRequestError(i18n.t('errors.api.users.noEmailProvided')));
             }
 
             return dataProvider.User.getByEmail(
@@ -312,7 +314,7 @@ users = {
                     if (foundUser.get('status') === 'invited' || foundUser.get('status') === 'invited-pending') {
                         return foundUser;
                     } else {
-                        return Promise.reject(new errors.BadRequestError('此用户已经注册。'));
+                        return Promise.reject(new errors.BadRequestError(i18n.t('errors.api.users.userAlreadyRegistered')));
                     }
                 }
             }).then(function (invitedUser) {
@@ -331,7 +333,8 @@ users = {
                 return Promise.resolve({users: [user]});
             }).catch(function (error) {
                 if (error && error.errorType === 'EmailError') {
-                    error.message = '邮件发送失败：' + error.message + ' 请检查邮件参数是否正确设置，然后重新发送邀请。';
+                    error.message = i18n.t('errors.api.users.errorSendingEmail.error', {message: error.message}) + ' ' +
+                        i18n.t('errors.api.users.errorSendingEmail.help');
                     errors.logWarn(error.message);
 
                     // If sending the invitation failed, set status to invited-pending
@@ -359,7 +362,7 @@ users = {
     /**
      * ## Destroy
      * @param {{id, context}} options
-     * @returns {Promise<User>}
+     * @returns {Promise}
      */
     destroy: function destroy(options) {
         var tasks;
@@ -375,38 +378,27 @@ users = {
                 options.status = 'all';
                 return options;
             }).catch(function handleError(error) {
-                return errors.formatAndRejectAPIError(error, '你没有删除此用户的权限。');
+                return errors.formatAndRejectAPIError(error, i18n.t('errors.api.users.noPermissionToDestroyUser'));
             });
         }
 
         /**
-         * ### Model Query
+         * ### Delete User
          * Make the call to the Model layer
          * @param {Object} options
-         * @returns {Object} options
          */
-        function doQuery(options) {
-            return users.read(options).then(function (result) {
-                return dataProvider.Base.transaction(function (t) {
-                    options.transacting = t;
+        function deleteUser(options) {
+            return dataProvider.Base.transaction(function (t) {
+                options.transacting = t;
 
-                    Promise.all([
-                        dataProvider.Accesstoken.destroyByUser(options),
-                        dataProvider.Refreshtoken.destroyByUser(options),
-                        dataProvider.Post.destroyByAuthor(options)
-                    ]).then(function () {
-                        return dataProvider.User.destroy(options);
-                    }).then(function () {
-                        t.commit();
-                    }).catch(function (error) {
-                        t.rollback(error);
-                    });
-                }).then(function () {
-                    return result;
-                }, function (error) {
-                    return Promise.reject(new errors.InternalServerError(error));
-                });
-            }, function (error) {
+                return Promise.all([
+                    dataProvider.Accesstoken.destroyByUser(options),
+                    dataProvider.Refreshtoken.destroyByUser(options),
+                    dataProvider.Post.destroyByAuthor(options)
+                ]).then(function () {
+                    return dataProvider.User.destroy(options);
+                }).return(null);
+            }).catch(function (error) {
                 return errors.formatAndRejectAPIError(error);
             });
         }
@@ -416,7 +408,7 @@ users = {
             utils.validate(docName, {opts: utils.idDefaultOptions}),
             handlePermissions,
             utils.convertOptions(allowedIncludes),
-            doQuery
+            deleteUser
         ];
 
         // Pipeline calls each task passing the result of one to be the arguments for the next
@@ -442,7 +434,7 @@ users = {
             return canThis(options.context).edit.user(options.data.password[0].user_id).then(function permissionGranted() {
                 return options;
             }).catch(function (error) {
-                return errors.formatAndRejectAPIError(error, '你没有修改此用户密码的权限。');
+                return errors.formatAndRejectAPIError(error, i18n.t('errors.api.users.noPermissionToChangeUsersPwd'));
             });
         }
 
@@ -469,7 +461,7 @@ users = {
 
         // Pipeline calls each task passing the result of one to be the arguments for the next
         return pipeline(tasks, object, options).then(function formatResponse() {
-            return Promise.resolve({password: [{message: '密码修改成功。'}]});
+            return Promise.resolve({password: [{message: i18n.t('notices.api.users.pwdChangedSuccessfully')}]});
         });
     },
 
